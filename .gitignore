@@ -1,0 +1,23 @@
+# JPEG AI reference software (tool esterno: si clona su Colab, NON si versiona)
+jpeg-ai-reference-software/
+
+# Ambiente conda/miniconda locale
+miniconda/
+miniconda.sh
+
+# Dataset e output di compressione (vivono su Drive, non nel repo)
+*_original/
+*_bpp*/
+data/
+datasets/
+jpegai_streams/
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Sistema
+.DS_Store
+Thumbs.db

@@ -1,4 +1,6 @@
 import os
+import subprocess
+import tempfile
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
@@ -52,3 +54,109 @@ base_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
+
+
+# =====================================================================
+# Compressione JPEG AI (Fase 1 - preparazione dataset)
+# Wrapper attorno al JPEG AI reference software (tool esterno).
+# Pipeline per immagine: originale -> encoder (target bpp) -> bitstream
+#                                  -> decoder -> PNG ricostruita.
+# Le PNG ricostruite vengono salvate in <classe>_bpp<X>, gli stessi nomi
+# che DeepfakeJPEGAIDataset cerca con suffix = f"bpp{target_bpp}".
+# =====================================================================
+
+VALID_IMG_EXT = ('.png', '.jpg', '.jpeg', '.bmp')
+
+
+def _jpegai_run(cmd, jpegai_dir, env_name="jpeg_ai_vm"):
+    """Esegue un comando nell'env conda di JPEG AI, dentro la sua directory."""
+    full = ["conda", "run", "-n", env_name] + cmd
+    res = subprocess.run(full, cwd=jpegai_dir, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"Comando JPEG AI fallito: {' '.join(cmd)}\nSTDERR:\n{res.stderr[-2000:]}"
+        )
+    return res
+
+
+def compress_image_jpegai(src_path, out_png_path, bpp, jpegai_dir,
+                          profile="base", stream_dir="/tmp/jpegai_streams",
+                          env_name="jpeg_ai_vm"):
+    """
+    Comprime una singola immagine a un dato bpp e salva la PNG ricostruita.
+
+    src_path:    immagine di input (se non e' PNG viene convertita al volo,
+                 l'encoder JPEG AI accetta solo PNG).
+    out_png_path: dove salvare l'immagine ricostruita.
+    bpp:         bit-per-pixel target (es. 0.12). --set_target_bpp vuole bpp*100.
+    jpegai_dir:  cartella del JPEG AI reference software (i path cfg sono relativi).
+    profile:     'simple', 'base' o 'high'.
+    """
+    os.makedirs(stream_dir, exist_ok=True)
+    cfg = ["cfg/tools_off.json", f"cfg/profiles/{profile}.json"]
+
+    # L'encoder vuole input PNG: converte se necessario
+    if src_path.lower().endswith(".png"):
+        png_in, is_tmp = src_path, False
+    else:
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=stream_dir)
+        tmp.close()
+        Image.open(src_path).convert("RGB").save(tmp.name)
+        png_in, is_tmp = tmp.name, True
+
+    base = os.path.splitext(os.path.basename(src_path))[0]
+    stream = os.path.join(stream_dir, f"{base}_bpp{bpp}.bin")
+    try:
+        _jpegai_run(
+            ["python", "-m", "src.reco.coders.encoder", png_in, stream,
+             "--set_target_bpp", str(int(round(bpp * 100))), "--cfg", *cfg],
+            jpegai_dir, env_name,
+        )
+        _jpegai_run(
+            ["python", "-m", "src.reco.coders.decoder", stream, out_png_path],
+            jpegai_dir, env_name,
+        )
+    finally:
+        if is_tmp and os.path.exists(png_in):
+            os.remove(png_in)
+        if os.path.exists(stream):
+            os.remove(stream)
+
+
+def compress_dataset_jpegai(dataset_path, bpp_list, jpegai_dir,
+                            classes=("real", "fake"), profile="base",
+                            env_name="jpeg_ai_vm"):
+    """
+    Comprime l'intero dataset a tutti i bpp richiesti.
+
+    Per ogni classe legge <classe>_original/ e genera <classe>_bpp<X>/ con le
+    immagini ricostruite. Riprende automaticamente (salta i file gia' fatti).
+
+    dataset_path: cartella che contiene real_original/ e fake_original/.
+    bpp_list:     lista di bpp (es. [0.12, 0.25, 0.50]). Devono combaciare con
+                  il target_bpp passato poi a DeepfakeJPEGAIDataset.
+    """
+    for cls in classes:
+        src_dir = os.path.join(dataset_path, f"{cls}_original")
+        if not os.path.isdir(src_dir):
+            print(f"⚠️  Manca {src_dir}, salto la classe '{cls}'.")
+            continue
+        images = [f for f in sorted(os.listdir(src_dir))
+                  if f.lower().endswith(VALID_IMG_EXT)]
+        print(f"=== Classe {cls}: {len(images)} immagini ===")
+
+        for bpp in bpp_list:
+            out_dir = os.path.join(dataset_path, f"{cls}_bpp{bpp}")
+            os.makedirs(out_dir, exist_ok=True)
+            print(f"  bpp={bpp} -> {out_dir}")
+            for fname in images:
+                src = os.path.join(src_dir, fname)
+                out = os.path.join(out_dir, os.path.splitext(fname)[0] + ".png")
+                if os.path.exists(out):
+                    continue
+                try:
+                    compress_image_jpegai(src, out, bpp, jpegai_dir,
+                                          profile=profile, env_name=env_name)
+                except Exception as e:
+                    print(f"    ❌ {fname}: {e}")
+    print("✅ Compressione completata.")
