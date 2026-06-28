@@ -84,32 +84,70 @@ def _list_images(root, recursive=True):
     return sorted(out)
 
 
+def _save_rgb_png(src_path, out_path):
+    """Apre un'immagine e la ri-salva come PNG RGB. Ritorna True se ok."""
+    try:
+        Image.open(src_path).convert("RGB").save(out_path)
+        return True
+    except Exception as e:
+        print(f"  ⚠️ skip {src_path}: {e}")
+        return False
+
+
 def build_original_split(real_src, fake_src, dataset_path,
-                         n_per_class=None, seed=42, recursive=True):
+                         n_per_class=None, seed=42, recursive=True, paired=True):
     """
     Prepara real_original/ e fake_original/ a partire da due cartelle sorgente
     qualsiasi (es. quelle del dataset FF++ scaricato da Kaggle).
 
     - Cerca le immagini anche nelle sottocartelle (recursive=True).
+    - paired=True: stessa selezione posizionale per real e fake, cosi' real_i e
+      fake_i sono lo STESSO frame sorgente (sfondo identico, volto diverso). Salva
+      la coppia solo se entrambe le immagini sono valide, per non rompere
+      l'accoppiamento degli indici. Richiede che le due cartelle abbiano lo stesso
+      ordinamento (tipico di FF++ Original vs Deepfakes).
+      paired=False: campionamento indipendente per classe (nessuna corrispondenza).
     - Sottocampiona n_per_class immagini per classe (None = tutte) con seed fisso.
     - Ri-salva TUTTO come PNG RGB: entrambe le classi condividono lo stesso formato
       (neutralizza il confound 'formato/container' prima della compressione JPEG AI).
     """
-    rng = random.Random(seed)
-    for cls, src in [("real", real_src), ("fake", fake_src)]:
-        imgs = _list_images(src, recursive=recursive)
-        rng.shuffle(imgs)
+    real = _list_images(real_src, recursive=recursive)
+    fake = _list_images(fake_src, recursive=recursive)
+
+    if paired:
+        m = min(len(real), len(fake))
+        idx = list(range(m))
+        random.Random(seed).shuffle(idx)
         if n_per_class is not None:
-            imgs = imgs[:n_per_class]
-        out_dir = os.path.join(dataset_path, f"{cls}_original")
-        os.makedirs(out_dir, exist_ok=True)
-        for i, p in enumerate(imgs):
-            out = os.path.join(out_dir, f"{cls}_{i:05d}.png")
-            try:
-                Image.open(p).convert("RGB").save(out)
-            except Exception as e:
-                print(f"  ⚠️ skip {p}: {e}")
-        print(f"{cls}_original: {len(imgs)} immagini -> {out_dir}")
+            idx = idx[:n_per_class]
+        real_out = os.path.join(dataset_path, "real_original")
+        fake_out = os.path.join(dataset_path, "fake_original")
+        os.makedirs(real_out, exist_ok=True)
+        os.makedirs(fake_out, exist_ok=True)
+        n = 0
+        for k in idx:
+            rp = os.path.join(real_out, f"real_{n:05d}.png")
+            fp = os.path.join(fake_out, f"fake_{n:05d}.png")
+            ok_r = _save_rgb_png(real[k], rp)
+            ok_f = _save_rgb_png(fake[k], fp)
+            if ok_r and ok_f:
+                n += 1
+            else:
+                # rimuovi l'eventuale meta' salvata per mantenere la corrispondenza
+                for pth in (rp, fp):
+                    if os.path.exists(pth):
+                        os.remove(pth)
+        print(f"real_original/fake_original: {n} coppie -> {dataset_path}")
+    else:
+        rng = random.Random(seed)
+        for cls, lst in [("real", real), ("fake", fake)]:
+            rng.shuffle(lst)
+            sel = lst if n_per_class is None else lst[:n_per_class]
+            out_dir = os.path.join(dataset_path, f"{cls}_original")
+            os.makedirs(out_dir, exist_ok=True)
+            n = sum(_save_rgb_png(p, os.path.join(out_dir, f"{cls}_{i:05d}.png"))
+                    for i, p in enumerate(sel))
+            print(f"{cls}_original: {n} immagini -> {out_dir}")
     print("✅ Split 'original' pronto.")
 
 
