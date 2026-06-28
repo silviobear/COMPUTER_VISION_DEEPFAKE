@@ -190,13 +190,14 @@ def compress_image_jpegai(src_path, out_png_path, bpp, jpegai_dir,
     base = os.path.splitext(os.path.basename(src_path))[0]
     stream = os.path.join(stream_dir, f"{base}_bpp{bpp}.bin")
     try:
+        # Una sola invocazione: l'encoder scrive direttamente la PNG ricostruita con
+        # -r (la calcola comunque internamente). Evita la seconda chiamata al decoder
+        # e un secondo caricamento del modello -> ~meta' del tempo per immagine.
+        # La ricostruzione dell'encoder coincide con l'output del decoder (codec compliant).
         _jpegai_run(
             ["python", "-m", "src.reco.coders.encoder", png_in, stream,
+             "-r", out_png_path,
              "--set_target_bpp", str(int(round(bpp * 100))), "--cfg", *cfg],
-            jpegai_dir, env_name,
-        )
-        _jpegai_run(
-            ["python", "-m", "src.reco.coders.decoder", stream, out_png_path],
             jpegai_dir, env_name,
         )
     finally:
