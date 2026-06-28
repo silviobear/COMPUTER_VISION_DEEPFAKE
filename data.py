@@ -1,4 +1,5 @@
 import os
+import random
 import subprocess
 import tempfile
 from PIL import Image
@@ -66,6 +67,50 @@ base_transform = transforms.Compose([
 # =====================================================================
 
 VALID_IMG_EXT = ('.png', '.jpg', '.jpeg', '.bmp')
+
+
+def _list_images(root, recursive=True):
+    """Elenca tutte le immagini sotto root (ricorsivo: gestisce sottocartelle per
+    video/metodo tipiche dei dataset FF++)."""
+    out = []
+    if recursive:
+        for dirpath, _, files in os.walk(root):
+            for f in files:
+                if f.lower().endswith(VALID_IMG_EXT):
+                    out.append(os.path.join(dirpath, f))
+    else:
+        out = [os.path.join(root, f) for f in os.listdir(root)
+               if f.lower().endswith(VALID_IMG_EXT)]
+    return sorted(out)
+
+
+def build_original_split(real_src, fake_src, dataset_path,
+                         n_per_class=None, seed=42, recursive=True):
+    """
+    Prepara real_original/ e fake_original/ a partire da due cartelle sorgente
+    qualsiasi (es. quelle del dataset FF++ scaricato da Kaggle).
+
+    - Cerca le immagini anche nelle sottocartelle (recursive=True).
+    - Sottocampiona n_per_class immagini per classe (None = tutte) con seed fisso.
+    - Ri-salva TUTTO come PNG RGB: entrambe le classi condividono lo stesso formato
+      (neutralizza il confound 'formato/container' prima della compressione JPEG AI).
+    """
+    rng = random.Random(seed)
+    for cls, src in [("real", real_src), ("fake", fake_src)]:
+        imgs = _list_images(src, recursive=recursive)
+        rng.shuffle(imgs)
+        if n_per_class is not None:
+            imgs = imgs[:n_per_class]
+        out_dir = os.path.join(dataset_path, f"{cls}_original")
+        os.makedirs(out_dir, exist_ok=True)
+        for i, p in enumerate(imgs):
+            out = os.path.join(out_dir, f"{cls}_{i:05d}.png")
+            try:
+                Image.open(p).convert("RGB").save(out)
+            except Exception as e:
+                print(f"  ⚠️ skip {p}: {e}")
+        print(f"{cls}_original: {len(imgs)} immagini -> {out_dir}")
+    print("✅ Split 'original' pronto.")
 
 
 def _jpegai_run(cmd, jpegai_dir, env_name="jpeg_ai_vm"):
